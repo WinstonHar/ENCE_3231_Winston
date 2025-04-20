@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Rename resource &apos;2025_STM32F407_Week2Timers&apos; to &apos;2025_STM32F407_CounterMode_Pooling&apos;" description="Rename resource &apos;2025_STM32F407_Week2Timers&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="/2025_STM32F407_Week2Timers" name="2025_STM32F407_CounterMode_Pooling" stamp="1744309074162" updateReferences="true"/>
+</session>
