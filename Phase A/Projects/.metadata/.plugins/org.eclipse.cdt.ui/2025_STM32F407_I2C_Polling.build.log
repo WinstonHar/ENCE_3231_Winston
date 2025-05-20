@@ -1,0 +1,10 @@
+12:19:26 **** Incremental Build of configuration Debug for project 2025_STM32F407_I2C_Polling ****
+make -j11 all 
+arm-none-eabi-size  2025_STM32F407_I2C_Polling.elf 
+   text	   data	    bss	    dec	    hex	filename
+  35672	    124	   4124	  39920	   9bf0	2025_STM32F407_I2C_Polling.elf
+Finished building: default.size.stdout
+ 
+
+12:19:26 Build Finished. 0 errors, 0 warnings. (took 134ms)
+

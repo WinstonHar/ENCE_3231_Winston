@@ -1551,3 +1551,19 @@ Command-line arguments:  -os macosx -ws cocoa -arch x86_64 -keyring /Users/winst
 
 !ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2025-05-18 15:36:05.741
 !MESSAGE Started RMI Server, listening on port 41337
+!SESSION 2025-05-20 11:58:47.127 -----------------------------------------------
+eclipse.buildId=Version 1.18.1
+java.version=21.0.3
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=macosx, ARCH=x86_64, WS=cocoa, NL=en_US
+Framework arguments:  -keyring /Users/winstonhar/.eclipse_keyring
+Command-line arguments:  -os macosx -ws cocoa -arch x86_64 -keyring /Users/winstonhar/.eclipse_keyring
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2025-05-20 11:58:53.786
+!MESSAGE Log4j2 initialized with config file /Users/winstonhar/ENCE-3231/Phase A/Projects/.metadata/.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2025-05-20 11:59:02.682
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY org.eclipse.cdt.core 1 0 2025-05-20 12:13:30.548
+!MESSAGE Indexed '2025_STM32F407_I2C_Polling' (34 sources, 100 headers) in 3.71 sec: 7,840 declarations; 50,110 references; 0 unresolved inclusions; 1 syntax errors; 2 unresolved names (0.0035%)
