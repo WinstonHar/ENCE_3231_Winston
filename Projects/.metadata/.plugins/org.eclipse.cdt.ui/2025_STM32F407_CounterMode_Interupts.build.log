@@ -1,0 +1,10 @@
+17:11:46 **** Build of configuration Debug for project 2025_STM32F407_CounterMode_Interupts ****
+make -j11 all 
+arm-none-eabi-size  2025_STM32F407_CounterMode_Interupts.elf 
+   text	   data	    bss	    dec	    hex	filename
+  38444	    124	   4196	  42764	   a70c	2025_STM32F407_CounterMode_Interupts.elf
+Finished building: default.size.stdout
+ 
+
+17:11:46 Build Finished. 0 errors, 0 warnings. (took 227ms)
+

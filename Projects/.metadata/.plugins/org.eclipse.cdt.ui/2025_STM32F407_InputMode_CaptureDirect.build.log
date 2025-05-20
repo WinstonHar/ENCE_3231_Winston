@@ -1,0 +1,10 @@
+12:10:04 **** Incremental Build of configuration Debug for project 2025_STM32F407_InputMode_CaptureDirect ****
+make -j11 all 
+arm-none-eabi-size  2025_STM32F407_InputMode_CaptureDirect.elf 
+   text	   data	    bss	    dec	    hex	filename
+  39212	    124	   4212	  43548	   aa1c	2025_STM32F407_InputMode_CaptureDirect.elf
+Finished building: default.size.stdout
+ 
+
+12:10:04 Build Finished. 0 errors, 0 warnings. (took 134ms)
+

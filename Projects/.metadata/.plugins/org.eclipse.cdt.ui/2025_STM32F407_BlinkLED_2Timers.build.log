@@ -1,0 +1,10 @@
+22:25:18 **** Incremental Build of configuration Debug for project 2025_STM32F407_BlinkLED_2Timers ****
+make -j11 all 
+arm-none-eabi-size  2025_STM32F407_BlinkLED_2Timers.elf 
+   text	   data	    bss	    dec	    hex	filename
+  38560	    124	   4268	  42952	   a7c8	2025_STM32F407_BlinkLED_2Timers.elf
+Finished building: default.size.stdout
+ 
+
+22:25:18 Build Finished. 0 errors, 0 warnings. (took 237ms)
+

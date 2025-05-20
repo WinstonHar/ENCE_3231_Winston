@@ -1,0 +1,10 @@
+13:10:21 **** Incremental Build of configuration Debug for project 2025_STM32F407_ADC_MultipleDMA ****
+make -j11 all 
+arm-none-eabi-size  2025_STM32F407_ADC_MultipleDMA.elf 
+   text	   data	    bss	    dec	    hex	filename
+  35804	    124	   4308	  40236	   9d2c	2025_STM32F407_ADC_MultipleDMA.elf
+Finished building: default.size.stdout
+ 
+
+13:10:21 Build Finished. 0 errors, 0 warnings. (took 256ms)
+

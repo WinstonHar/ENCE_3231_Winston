@@ -1,0 +1,17 @@
+../Core/Src/main.c:126:6:ProcessBatteryVoltage	7
+../Core/Src/main.c:166:6:SetMotorSpeed	2
+../Core/Src/main.c:173:6:SetMotorDirection	6
+../Core/Src/main.c:206:6:ControlMotors	1
+../Core/Src/main.c:210:6:ProcessButtonClicks	6
+../Core/Src/main.c:230:5:main	6
+../Core/Src/main.c:334:6:SystemClock_Config	3
+../Core/Src/main.c:380:13:MX_ADC1_Init	7
+../Core/Src/main.c:474:13:MX_I2C1_Init	2
+../Core/Src/main.c:508:13:MX_I2S3_Init	2
+../Core/Src/main.c:542:13:MX_SPI1_Init	2
+../Core/Src/main.c:580:13:MX_TIM2_Init	8
+../Core/Src/main.c:650:13:MX_DMA_Init	1
+../Core/Src/main.c:668:13:MX_GPIO_Init	1
+../Core/Src/main.c:774:6:HAL_ADC_ConvCpltCallback	2
+../Core/Src/main.c:783:6:HAL_TIM_IC_CaptureCallback	6
+../Core/Src/main.c:819:6:Error_Handler	1

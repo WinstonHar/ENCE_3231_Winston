@@ -1,0 +1,10 @@
+22:24:28 **** Build of configuration Debug for project 2025_STM32F407_WeekTwo ****
+make -j11 all 
+arm-none-eabi-size  2025_STM32F407_WeekTwo.elf 
+   text	   data	    bss	    dec	    hex	filename
+  35832	    124	   4124	  40080	   9c90	2025_STM32F407_WeekTwo.elf
+Finished building: default.size.stdout
+ 
+
+22:24:28 Build Finished. 0 errors, 0 warnings. (took 354ms)
+

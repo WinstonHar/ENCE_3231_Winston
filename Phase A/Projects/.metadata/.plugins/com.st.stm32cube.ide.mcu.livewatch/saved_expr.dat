@@ -1,1 +1,6 @@
-Distance_cm
+gFlag_ADC_Finished
+gButtonClickCount
+gBatteryVoltage_mV
+gBatteryState
+gMotorsEnabledByBattery
+gMotorCommand

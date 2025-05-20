@@ -3,6 +3,16 @@
 	<item key="hasShownOverlayPopupBefore" value="true"/>
 	<item key="replaceBarOpen" value="false"/>
 	<list key="searchhistory">
+		<item value="MOTOR_DEFAULT_SPEED_DUTY"/>
+		<item value="SetMotorSpeed"/>
+		<item value="MOTOR_PWM_TIMER"/>
+		<item value="gMotorCommandMOTOR_PWM_TIMER"/>
+		<item value="gMotorCommand"/>
+		<item value="gButtonClickCount"/>
+		<item value="BATT_THRESHOLD_RESTART_MV"/>
+		<item value="gADC_Value"/>
+		<item value="VOLTAGE_DIVIDER_RATIO"/>
+		<item value="gFlag_ADC_Finished = 1;"/>
 		<item value="SysTick_Handler(void)"/>
 	</list>
 </section>

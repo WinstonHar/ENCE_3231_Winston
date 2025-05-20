@@ -1,0 +1,809 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "usb_host.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include <stdio.h> // For potential debug prints
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+typedef enum {
+    MOTOR_STOPPED,
+    MOTOR_CCW,
+    MOTOR_CW
+} MotorState_t;
+
+typedef enum {
+    BATT_OK,
+    BATT_LOW_SHUTDOWN, // Motors off, waiting for >7V
+    BATT_VERY_LOW      // Motors off, below 6.5V
+} BatteryState_t;
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+// ADC & Battery Voltage Defines
+#define VREF_MV                     3300.0f // ADC Reference voltage in millivolts (e.g., 3.3V)
+#define ADC_MAX_VALUE               4095.0f // For 12-bit ADC (2^12 - 1)
+// *** IMPORTANT: CALIBRATE THIS Voltage Divider Ratio ***
+// Example: If R1=10k, R2=5.6k, Ratio = (10k + 5.6k) / 5.6k = 15.6 / 5.6 = 2.7857
+#define VOLTAGE_DIVIDER_RATIO       2.7857f // (R1+R2)/R2 for your voltage divider
+#define BATT_THRESHOLD_LOW_MV       6500    // 6.5V in mV
+#define BATT_THRESHOLD_RESTART_MV   7000    // 7.0V in mV
+
+// Motor PWM Timer (Assuming TIM2, Channel 1)
+#define MOTOR_PWM_TIMER             htim2   // Change if you used a different timer
+#define MOTOR_PWM_CHANNEL           TIM_CHANNEL_1
+#define MOTOR_PWM_MAX_DUTY          1023    // Corresponds to ARR set in CubeMX for TIM2
+#define MOTOR_DEFAULT_SPEED_DUTY    (MOTOR_PWM_MAX_DUTY / 2) // 50% speed
+
+// Button Click Detection
+#define BUTTON_DEBOUNCE_MS          50      // Debounce time for button
+#define BUTTON_MULTICLICK_TIMEOUT_MS 300    // Max time between clicks for multi-click
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
+I2C_HandleTypeDef hi2c1;
+
+I2S_HandleTypeDef hi2s3;
+
+SPI_HandleTypeDef hspi1;
+
+TIM_HandleTypeDef htim2;
+
+/* USER CODE BEGIN PV */
+// ADC Variables
+#if ADC_NROFCONVERSIONS == 1 // If you changed NbrOfConversion to 1
+uint16_t gADC_Value = 0; // Single ADC value
+#else
+uint16_t gADC_Values[1] = {0}; // If you kept NbrOfConversions > 1, but only use the first
+#endif
+volatile uint8_t gFlag_ADC_Finished = 0;
+volatile uint32_t gBatteryVoltage_mV = 0;
+volatile BatteryState_t gBatteryState = BATT_OK;
+
+// Motor State Variables
+volatile MotorState_t gMotorCommand = MOTOR_STOPPED;
+volatile uint8_t gMotorsEnabledByBattery = 1; // Start assuming battery is OK
+
+// Button Click Variables
+volatile uint8_t  gButtonClickCount = 0;
+volatile uint32_t gLastButtonPressTime = 0;
+volatile uint32_t gButtonDebounceCheckTime = 0;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_I2S3_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM2_Init(void);
+void MX_USB_HOST_Process(void);
+
+/* USER CODE BEGIN PFP */
+void ProcessBatteryVoltage(void);
+void ControlMotors(void);
+void SetMotorSpeed(uint16_t duty_cycle);
+void SetMotorDirection(MotorState_t direction);
+void ProcessButtonClicks(void);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+
+void ProcessBatteryVoltage(void) {
+    uint32_t raw_adc;
+
+#if ADC_NROFCONVERSIONS == 1
+    raw_adc = gADC_Value;
+#else
+    raw_adc = gADC_Values[0]; // Assuming battery voltage is the first channel
+#endif
+
+    // Convert ADC raw value to millivolts
+    // V_adc = raw_adc * (VREF_MV / ADC_MAX_VALUE)
+    // V_battery = V_adc * VOLTAGE_DIVIDER_RATIO
+    gBatteryVoltage_mV = (uint32_t)(((float)raw_adc * VREF_MV / ADC_MAX_VALUE) * VOLTAGE_DIVIDER_RATIO);
+
+    // Hysteresis for battery state
+    if (gBatteryState == BATT_VERY_LOW) {
+        if (gBatteryVoltage_mV > BATT_THRESHOLD_RESTART_MV) {
+            gBatteryState = BATT_OK;
+            gMotorsEnabledByBattery = 1;
+        }
+    } else if (gBatteryState == BATT_LOW_SHUTDOWN) {
+         if (gBatteryVoltage_mV > BATT_THRESHOLD_RESTART_MV) {
+            gBatteryState = BATT_OK;
+            gMotorsEnabledByBattery = 1;
+        } else if (gBatteryVoltage_mV < BATT_THRESHOLD_LOW_MV) {
+            gBatteryState = BATT_VERY_LOW;
+            gMotorsEnabledByBattery = 0;
+        }
+    }
+    else { // BATT_OK
+        if (gBatteryVoltage_mV < BATT_THRESHOLD_LOW_MV) {
+            gBatteryState = BATT_VERY_LOW; // Or BATT_LOW_SHUTDOWN if you want a distinct state
+            gMotorsEnabledByBattery = 0;
+        }
+    }
+
+    // For debugging (optional, requires UART setup)
+    // printf("Battery Voltage: %lu mV, State: %d\r\n", gBatteryVoltage_mV, gBatteryState);
+}
+
+void SetMotorSpeed(uint16_t duty_cycle) {
+    if (duty_cycle > MOTOR_PWM_MAX_DUTY) {
+        duty_cycle = MOTOR_PWM_MAX_DUTY;
+    }
+    __HAL_TIM_SET_COMPARE(&MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL, duty_cycle);
+}
+
+void SetMotorDirection(MotorState_t command) {
+    if (!gMotorsEnabledByBattery) { // If battery is too low, force stop
+        HAL_GPIO_WritePin(MOTOR_IN1_GPIO_Port, MOTOR_IN1_Pin, GPIO_PIN_RESET); // Use labels from CubeMX
+        HAL_GPIO_WritePin(MOTOR_IN2_GPIO_Port, MOTOR_IN2_Pin, GPIO_PIN_RESET);
+        SetMotorSpeed(0);
+        return;
+    }
+
+    switch (command) {
+        case MOTOR_STOPPED:
+            HAL_GPIO_WritePin(MOTOR_IN1_GPIO_Port, MOTOR_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(MOTOR_IN2_GPIO_Port, MOTOR_IN2_Pin, GPIO_PIN_RESET);
+            SetMotorSpeed(0);
+            break;
+        case MOTOR_CCW:
+            HAL_GPIO_WritePin(MOTOR_IN1_GPIO_Port, MOTOR_IN1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(MOTOR_IN2_GPIO_Port, MOTOR_IN2_Pin, GPIO_PIN_RESET);
+            // Note: Actual IN1/IN2 for CCW/CW depends on your wiring to the motor driver
+            SetMotorSpeed(MOTOR_DEFAULT_SPEED_DUTY);
+            break;
+        case MOTOR_CW:
+            HAL_GPIO_WritePin(MOTOR_IN1_GPIO_Port, MOTOR_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(MOTOR_IN2_GPIO_Port, MOTOR_IN2_Pin, GPIO_PIN_SET);
+            SetMotorSpeed(MOTOR_DEFAULT_SPEED_DUTY);
+            break;
+        default:
+            HAL_GPIO_WritePin(MOTOR_IN1_GPIO_Port, MOTOR_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(MOTOR_IN2_GPIO_Port, MOTOR_IN2_Pin, GPIO_PIN_RESET);
+            SetMotorSpeed(0);
+            break;
+    }
+}
+
+void ControlMotors(void) {
+    SetMotorDirection(gMotorCommand);
+}
+
+void ProcessButtonClicks(void) {
+    // This function is called periodically from the main loop to check if a multi-click timeout has occurred.
+    if (gButtonClickCount > 0 && (HAL_GetTick() - gLastButtonPressTime > BUTTON_MULTICLICK_TIMEOUT_MS)) {
+        if (gButtonClickCount == 1) {
+            gMotorCommand = MOTOR_STOPPED;
+        } else if (gButtonClickCount == 2) {
+            gMotorCommand = MOTOR_CCW;
+        } else if (gButtonClickCount >= 3) { // More than 3 clicks also results in CW
+            gMotorCommand = MOTOR_CW;
+        }
+        gButtonClickCount = 0; // Reset for next sequence
+        // printf("Button Clicks Processed: %d -> Motor Command: %d\r\n", tempClickCount, gMotorCommand);
+    }
+}
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_I2C1_Init();
+  MX_I2S3_Init();
+  MX_SPI1_Init();
+  MX_USB_HOST_Init();
+  MX_ADC1_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+  // Start ADC with DMA
+  #if ADC_NROFCONVERSIONS == 1
+    if (HAL_ADC_Start_DMA(&hadc1, (uint32_t*)&gADC_Value, 1) != HAL_OK) {
+        Error_Handler();
+    }
+  #else
+    if (HAL_ADC_Start_DMA(&hadc1, (uint32_t*)gADC_Values, 1) != HAL_OK) { // Still read 1 value into the array
+        Error_Handler();
+    }
+  #endif
+
+    // Start PWM Timer
+    if (HAL_TIM_PWM_Start(&MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL) != HAL_OK) {
+        Error_Handler();
+    }
+    SetMotorSpeed(0); // Ensure motors are off at start
+
+    gMotorCommand = MOTOR_STOPPED; // Initial motor state
+    SetMotorDirection(gMotorCommand);
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  uint32_t last_adc_check_time = HAL_GetTick();
+
+  while (1)
+  {
+    /* USER CODE END WHILE */
+    MX_USB_HOST_Process();
+
+    /* USER CODE BEGIN 3 */
+    uint32_t current_time = HAL_GetTick();
+
+        // Process ADC data periodically (e.g., every 100ms)
+        if (gFlag_ADC_Finished == 1) {
+            gFlag_ADC_Finished = 0;
+            ProcessBatteryVoltage(); // Process the new ADC value
+
+            // Restart DMA for next conversion after processing
+    #if ADC_NROFCONVERSIONS == 1
+            if (HAL_ADC_Start_DMA(&hadc1, (uint32_t*)&gADC_Value, 1) != HAL_OK) {
+                Error_Handler(); // Or handle error more gracefully
+            }
+    #else
+            if (HAL_ADC_Start_DMA(&hadc1, (uint32_t*)gADC_Values, 1) != HAL_OK) {
+                Error_Handler();
+            }
+    #endif
+        }
+
+        // Check for button click timeout
+        ProcessButtonClicks();
+
+        // Apply motor commands based on battery and button
+        ControlMotors();
+
+        // Minimal delay to allow other tasks/interrupts, ADC runs on DMA
+        HAL_Delay(10); // Adjust as needed, e.g. 10-50ms
+      }
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+  ADC_InjectionConfTypeDef sConfigInjected = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_1;
+  sConfigInjected.InjectedRank = 1;
+  sConfigInjected.InjectedNbrOfConversion = 4;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_NONE;
+  sConfigInjected.ExternalTrigInjecConv = ADC_INJECTED_SOFTWARE_START;
+  sConfigInjected.AutoInjectedConv = DISABLE;
+  sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected.InjectedOffset = 0;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
+  */
+  sConfigInjected.InjectedRank = 2;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
+  */
+  sConfigInjected.InjectedRank = 3;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configures for the selected ADC injected channel its corresponding rank in the sequencer and its sample time
+  */
+  sConfigInjected.InjectedRank = 4;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2S3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2S3_Init(void)
+{
+
+  /* USER CODE BEGIN I2S3_Init 0 */
+
+  /* USER CODE END I2S3_Init 0 */
+
+  /* USER CODE BEGIN I2S3_Init 1 */
+
+  /* USER CODE END I2S3_Init 1 */
+  hi2s3.Instance = SPI3;
+  hi2s3.Init.Mode = I2S_MODE_MASTER_TX;
+  hi2s3.Init.Standard = I2S_STANDARD_PHILIPS;
+  hi2s3.Init.DataFormat = I2S_DATAFORMAT_16B;
+  hi2s3.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
+  hi2s3.Init.AudioFreq = I2S_AUDIOFREQ_96K;
+  hi2s3.Init.CPOL = I2S_CPOL_LOW;
+  hi2s3.Init.ClockSource = I2S_CLOCK_PLL;
+  hi2s3.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
+  if (HAL_I2S_Init(&hi2s3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2S3_Init 2 */
+
+  /* USER CODE END I2S3_Init 2 */
+
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 167;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 1023;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(CS_I2C_SPI_GPIO_Port, CS_I2C_SPI_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(OTG_FS_PowerSwitchOn_GPIO_Port, OTG_FS_PowerSwitchOn_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, MOTOR_IN1_Pin|MOTOR_IN2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
+                          |Audio_RST_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : CS_I2C_SPI_Pin */
+  GPIO_InitStruct.Pin = CS_I2C_SPI_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(CS_I2C_SPI_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : EXT_BUTTON_Pin */
+  GPIO_InitStruct.Pin = EXT_BUTTON_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(EXT_BUTTON_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : OTG_FS_PowerSwitchOn_Pin */
+  GPIO_InitStruct.Pin = OTG_FS_PowerSwitchOn_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(OTG_FS_PowerSwitchOn_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PDM_OUT_Pin */
+  GPIO_InitStruct.Pin = PDM_OUT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
+  HAL_GPIO_Init(PDM_OUT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : MOTOR_IN1_Pin MOTOR_IN2_Pin */
+  GPIO_InitStruct.Pin = MOTOR_IN1_Pin|MOTOR_IN2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : BOOT1_Pin */
+  GPIO_InitStruct.Pin = BOOT1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(BOOT1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : CLK_IN_Pin */
+  GPIO_InitStruct.Pin = CLK_IN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
+  HAL_GPIO_Init(CLK_IN_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LD4_Pin LD3_Pin LD5_Pin LD6_Pin
+                           Audio_RST_Pin */
+  GPIO_InitStruct.Pin = LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
+                          |Audio_RST_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : OTG_FS_OverCurrent_Pin */
+  GPIO_InitStruct.Pin = OTG_FS_OverCurrent_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(OTG_FS_OverCurrent_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : MEMS_INT2_Pin */
+  GPIO_InitStruct.Pin = MEMS_INT2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(MEMS_INT2_GPIO_Port, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+// ADC Conversion Complete Callback
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+    if (hadc->Instance == ADC1) {
+        gFlag_ADC_Finished = 1;
+        // The actual ADC value is already in gADC_Value (or gADC_Values[0]) via DMA
+        // No need to restart DMA here, main loop will do it after processing.
+    }
+}
+
+// External Interrupt Callback for Button
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    uint32_t current_tick = HAL_GetTick();
+
+    // Check which pin triggered the interrupt (replace EXT_BUTTON_Pin with your actual pin define from main.h)
+    if (GPIO_Pin == EXT_BUTTON_Pin) { // EXT_BUTTON_Pin is defined by CubeMX based on User Label
+        // Debounce: Check if enough time has passed since the last valid press/debounce check
+        if ((current_tick - gButtonDebounceCheckTime) > BUTTON_DEBOUNCE_MS) {
+            gButtonDebounceCheckTime = current_tick; // Update time for next debounce check
+
+            // Multi-click logic
+            if ((current_tick - gLastButtonPressTime) > BUTTON_MULTICLICK_TIMEOUT_MS || gButtonClickCount == 0) {
+                // This is the first click of a new sequence (or timeout occurred)
+                gButtonClickCount = 1;
+            } else {
+                // This is a subsequent click within the timeout window
+                gButtonClickCount++;
+            }
+            gLastButtonPressTime = current_tick; // Record time of this valid (debounced) press
+            // printf("Button Press Detected! Clicks: %d\r\n", gButtonClickCount);
+        }
+    }
+}
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
